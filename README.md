@@ -177,3 +177,6 @@ app/
   routers/contacts.py REST endpoints
 tests/                API tests via FastAPI TestClient
 ```
+
+<!-- qodo smoke test: throwaway branch, do not merge -->
+
