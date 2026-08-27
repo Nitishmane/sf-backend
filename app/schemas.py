@@ -28,8 +28,19 @@ def _validate_photo_data_url(value: str | None) -> str | None:
             "Only png, jpeg, and webp are accepted."
         )
 
+    payload = match.group("payload")
+
+    # Reject on the *encoded* length first. base64 is 4 characters per 3 bytes,
+    # so this bounds the decoded size without allocating it — otherwise a
+    # 50 MB payload gets fully decoded just to be told it is too big, which is
+    # free memory pressure for any unauthenticated caller.
+    if len(payload) > (MAX_PHOTO_BYTES + 2) // 3 * 4:
+        raise ValueError(
+            f"photo is larger than the {MAX_PHOTO_BYTES} byte limit. Resize the image before uploading."
+        )
+
     try:
-        decoded = base64.b64decode(match.group("payload"), validate=True)
+        decoded = base64.b64decode(payload, validate=True)
     except binascii.Error as exc:
         raise ValueError("photo is not valid base64 data.") from exc
 
