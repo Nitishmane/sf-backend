@@ -1,4 +1,12 @@
+import base64
+
+from app.schemas import MAX_PHOTO_BYTES
+
 BASE = "/api/v1/contacts"
+
+# Just the 8-byte PNG signature. The validator checks the envelope, not the
+# pixels, so a full image would only make these tests slower to read.
+PHOTO = "data:image/png;base64,iVBORw0KGgo="
 
 
 def test_health(client):
@@ -132,6 +140,71 @@ def test_put_missing_contact_returns_404(client):
         json={"first_name": "A", "last_name": "B", "email": "ab@example.com"},
     )
     assert response.status_code == 404
+
+
+def test_photo_round_trips(client, payload):
+    response = client.post(BASE, json={**payload, "photo": PHOTO})
+    assert response.status_code == 201
+    contact_id = response.json()["id"]
+    assert response.json()["photo"] == PHOTO
+    assert client.get(f"{BASE}/{contact_id}").json()["photo"] == PHOTO
+
+
+def test_photo_defaults_to_none(client, payload):
+    assert client.post(BASE, json=payload).json()["photo"] is None
+
+
+def test_photo_rejects_non_image_data_url(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:text/html;base64,PHNjcmlwdD4="})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_remote_url(client, payload):
+    # A URL would make the frontend fetch third-party content; only inline data is allowed.
+    response = client.post(BASE, json={**payload, "photo": "https://example.com/ada.png"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_malformed_base64(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,not!valid!"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_oversized_image(client, payload):
+    oversized = base64.b64encode(b"\x00" * (MAX_PHOTO_BYTES + 1)).decode()
+    response = client.post(BASE, json={**payload, "photo": f"data:image/png;base64,{oversized}"})
+    assert response.status_code == 422
+    assert "limit" in response.text
+
+
+def test_blank_photo_is_stored_as_null(client, payload):
+    response = client.post(BASE, json={**payload, "photo": ""})
+    assert response.status_code == 201
+    assert response.json()["photo"] is None
+
+
+def test_put_without_photo_clears_it(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PHOTO}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["photo"] is None  # PUT is a full replace
+
+
+def test_patch_without_photo_keeps_it(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PHOTO}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"job_title": "Countess"})
+    assert response.status_code == 200
+    assert response.json()["photo"] == PHOTO
+
+
+def test_patch_can_clear_photo(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PHOTO}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"photo": None})
+    assert response.status_code == 200
+    assert response.json()["photo"] is None
 
 
 def test_delete_contact(client, payload):
