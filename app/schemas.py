@@ -1,6 +1,48 @@
+import base64
+import binascii
+import re
 from datetime import datetime, timezone
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+MAX_PHOTO_BYTES = 1_500_000
+"""Ceiling on the *decoded* photo, before base64 inflates it by a third."""
+
+_PHOTO_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp);base64,(?P<payload>[A-Za-z0-9+/]+={0,2})")
+
+# A one-pixel PNG, short enough to keep the generated docs readable.
+_EXAMPLE_PHOTO = "data:image/png;base64,iVBORw0KGgo="
+
+
+def _validate_photo_data_url(value: str | None) -> str | None:
+    """Accept only a well-formed, size-capped image data URL. Blank means "no photo"."""
+    if value is None or not value.strip():
+        return None
+
+    value = value.strip()
+    match = _PHOTO_DATA_URL.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            "photo must be a base64 image data URL, e.g. 'data:image/png;base64,...'. "
+            "Only png, jpeg, and webp are accepted."
+        )
+
+    try:
+        decoded = base64.b64decode(match.group("payload"), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("photo is not valid base64 data.") from exc
+
+    if len(decoded) > MAX_PHOTO_BYTES:
+        raise ValueError(
+            f"photo decodes to {len(decoded)} bytes, over the {MAX_PHOTO_BYTES} byte limit. "
+            "Resize the image before uploading."
+        )
+    return value
+
+
+PhotoDataUrl = Annotated[str | None, AfterValidator(_validate_photo_data_url)]
+"""Shared so `ContactBase` and `ContactUpdate` cannot drift apart on this rule."""
 
 
 class ContactBase(BaseModel):
@@ -69,6 +111,14 @@ class ContactBase(BaseModel):
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+    photo: PhotoDataUrl = Field(
+        default=None,
+        description=(
+            "Profile photo as a base64 data URL — png, jpeg, or webp, up to "
+            f"{MAX_PHOTO_BYTES} bytes decoded. Send an empty string or `null` to clear it."
+        ),
+        examples=[_EXAMPLE_PHOTO],
+    )
 
 
 _FULL_EXAMPLE = {
@@ -84,6 +134,7 @@ _FULL_EXAMPLE = {
     "postal_code": "94105",
     "country": "USA",
     "notes": "Met at the SF hackathon.",
+    "photo": _EXAMPLE_PHOTO,
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
 
@@ -134,6 +185,10 @@ class ContactUpdate(BaseModel):
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+    photo: PhotoDataUrl = Field(
+        default=None,
+        description="New profile photo as a base64 data URL. Send `null` or an empty string to remove it.",
+    )
 
 
 class ContactRead(ContactBase):
