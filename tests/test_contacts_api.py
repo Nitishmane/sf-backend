@@ -1,12 +1,45 @@
 import base64
 
-from app.schemas import MAX_PHOTO_BYTES
+from sqlalchemy import func, select
+
+from app.database import SessionLocal
+from app.models import Address
+from app.schemas import MAX_ADDRESSES, MAX_PHOTO_BYTES
 
 BASE = "/api/v1/contacts"
 
 # Just the 8-byte PNG signature. The validator checks the envelope, not the
 # pixels, so a full image would only make these tests slower to read.
 PHOTO = "data:image/png;base64,iVBORw0KGgo="
+
+HOME_ADDRESS = {
+    "type": "Home",
+    "street": "10 Downing St",
+    "city": "London",
+    "postal_code": "SW1A 1AA",
+    "country": "UK",
+}
+WORK_ADDRESS = {
+    "type": "Work",
+    "street": "1 Market St",
+    "city": "San Francisco",
+    "state": "CA",
+    "postal_code": "94105",
+    "country": "USA",
+    "is_primary": True,
+}
+
+
+def count_address_rows() -> int:
+    """
+    Count `addresses` rows straight from the database.
+
+    Orphan cleanup and delete-cascade are precisely the things a response body
+    cannot prove: a contact can report zero addresses while the rows sit there
+    with a dangling `contact_id`. Only the table tells the truth.
+    """
+    with SessionLocal() as db:
+        return db.execute(select(func.count()).select_from(Address)).scalar_one()
 
 
 def test_health(client):
@@ -207,11 +240,127 @@ def test_patch_can_clear_photo(client, payload):
     assert response.json()["photo"] is None
 
 
+def test_create_with_multiple_addresses(client, payload):
+    response = client.post(
+        BASE,
+        json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]},
+    )
+    assert response.status_code == 201
+
+    addresses = response.json()["addresses"]
+    assert [a["type"] for a in addresses] == ["Home", "Work"]
+    assert addresses[0]["city"] == "London"
+    assert addresses[1]["is_primary"] is True
+    # Each child row comes back with its own id, which is the point of AddressRead.
+    assert len({a["id"] for a in addresses}) == 2
+
+
+def test_addresses_default_to_empty_list(client, payload):
+    response = client.post(BASE, json={k: v for k, v in payload.items() if k != "addresses"})
+    assert response.status_code == 201
+    assert response.json()["addresses"] == []
+
+
+def test_address_rejects_unknown_type(client, payload):
+    response = client.post(
+        BASE,
+        json={**payload, "addresses": [{**HOME_ADDRESS, "type": "Vacation"}]},
+    )
+    assert response.status_code == 422
+
+
+def test_address_type_defaults_to_home(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [{"city": "Paris"}]})
+    assert response.status_code == 201
+    assert response.json()["addresses"][0]["type"] == "Home"
+
+
+def test_rejects_more_than_max_addresses(client, payload):
+    too_many = [{**HOME_ADDRESS, "city": f"City {i}"} for i in range(MAX_ADDRESSES + 1)]
+    response = client.post(BASE, json={**payload, "addresses": too_many})
+    assert response.status_code == 422
+
+
+def test_addresses_survive_a_read_after_write(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    body = client.get(f"{BASE}/{contact_id}").json()
+    assert len(body["addresses"]) == 1
+    assert body["addresses"][0]["postal_code"] == "SW1A 1AA"
+
+
+def test_addresses_appear_in_the_list_endpoint(client, payload):
+    client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]})
+    items = client.get(BASE).json()["items"]
+    assert len(items[0]["addresses"]) == 2
+
+
+def test_put_with_shorter_list_deletes_the_orphans(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]}).json()["id"]
+
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "addresses": [WORK_ADDRESS],
+        },
+    )
+    assert response.status_code == 200
+    assert [a["type"] for a in response.json()["addresses"]] == ["Work"]
+    # The dropped row is gone for good, not merely detached.
+    assert count_address_rows() == 1
+
+
+def test_put_without_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.put(
+        f"{BASE}/{contact_id}",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"},
+    )
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+    assert count_address_rows() == 0
+
+
+def test_patch_without_addresses_keeps_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"job_title": "Countess"})
+    assert response.status_code == 200
+    assert len(response.json()["addresses"]) == 1
+
+
+def test_patch_can_replace_the_address_list(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": [WORK_ADDRESS, HOME_ADDRESS]})
+    assert response.status_code == 200
+    assert [a["type"] for a in response.json()["addresses"]] == ["Work", "Home"]
+    assert count_address_rows() == 2
+
+
+def test_patch_with_empty_list_deletes_all_addresses(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+    assert count_address_rows() == 0
+
+
 def test_delete_contact(client, payload):
     contact_id = client.post(BASE, json=payload).json()["id"]
     assert client.delete(f"{BASE}/{contact_id}").status_code == 204
     assert client.get(f"{BASE}/{contact_id}").status_code == 404
     assert client.delete(f"{BASE}/{contact_id}").status_code == 404
+
+
+def test_deleting_a_contact_cascades_its_addresses(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS, WORK_ADDRESS]}).json()["id"]
+    assert count_address_rows() == 2
+
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+    # passive_deletes hands this to SQLite's ON DELETE CASCADE, so the check is
+    # that the rows are really gone rather than left with a dangling contact_id.
+    assert count_address_rows() == 0
 
 
 def test_root_lists_entrypoints(client):
