@@ -1,6 +1,7 @@
 from app.crud import count_contacts, create_contact
 from app.database import SessionLocal
-from app.schemas import ContactCreate
+from app.models import AddressType
+from app.schemas import AddressCreate, ContactCreate
 
 SAMPLE_CONTACTS = [
     ContactCreate(
@@ -10,10 +11,27 @@ SAMPLE_CONTACTS = [
         phone="+1-415-555-0101",
         company="Analytical Engines",
         job_title="Mathematician",
-        city="San Francisco",
-        state="CA",
-        country="USA",
         notes="First programmer.",
+        # Two addresses so the seeded data actually exercises the one-to-many
+        # rather than looking like the old single-address shape.
+        addresses=[
+            AddressCreate(
+                type=AddressType.WORK,
+                street="1 Market St, Suite 400",
+                city="San Francisco",
+                state="CA",
+                postal_code="94105",
+                country="USA",
+                is_primary=True,
+            ),
+            AddressCreate(
+                type=AddressType.HOME,
+                street="12 Ockham Rd",
+                city="Surrey",
+                postal_code="GU23 6PA",
+                country="UK",
+            ),
+        ],
     ),
     ContactCreate(
         first_name="Grace",
@@ -22,9 +40,17 @@ SAMPLE_CONTACTS = [
         phone="+1-415-555-0102",
         company="US Navy",
         job_title="Rear Admiral",
-        city="Arlington",
-        state="VA",
-        country="USA",
+        addresses=[
+            AddressCreate(
+                type=AddressType.WORK,
+                street="1 Navy Yard",
+                city="Arlington",
+                state="VA",
+                postal_code="22202",
+                country="USA",
+                is_primary=True,
+            )
+        ],
     ),
     ContactCreate(
         first_name="Alan",
@@ -33,8 +59,15 @@ SAMPLE_CONTACTS = [
         phone="+44-20-5555-0103",
         company="Bletchley Park",
         job_title="Cryptanalyst",
-        city="London",
-        country="UK",
+        addresses=[
+            AddressCreate(
+                type=AddressType.HOME,
+                street="Sherwood, Adlington Rd",
+                city="London",
+                country="UK",
+                is_primary=True,
+            )
+        ],
     ),
 ]
 
