@@ -1,6 +1,6 @@
 import base64
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.database import SessionLocal
 from app.models import Address
@@ -344,6 +344,42 @@ def test_patch_with_empty_list_deletes_all_addresses(client, payload):
     assert response.status_code == 200
     assert response.json()["addresses"] == []
     assert count_address_rows() == 0
+
+
+def test_patch_rejects_an_explicit_null_address_list(client, payload):
+    """
+    `null` is not a third spelling of "leave them alone".
+
+    Omission already means that. Accepting `null` too would let a well-formed
+    request report 200 while quietly doing nothing, so it fails validation.
+    """
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME_ADDRESS]}).json()["id"]
+
+    assert client.patch(f"{BASE}/{contact_id}", json={"addresses": None}).status_code == 422
+    assert client.get(f"{BASE}/{contact_id}").json()["addresses"][0]["city"] == HOME_ADDRESS["city"]
+
+
+def test_address_type_is_stored_as_the_value_the_api_speaks(client, payload):
+    """
+    SQLAlchemy persists enum *names* by default, which would put `WORK` in the
+    column while the API says `Work`. Reading the raw column is the only way to
+    catch that — the ORM converts it back on the way out either way.
+    """
+    client.post(BASE, json={**payload, "addresses": [WORK_ADDRESS]})
+
+    with SessionLocal() as db:
+        assert db.execute(text("SELECT type FROM addresses")).scalar_one() == "Work"
+
+
+def test_the_database_itself_rejects_an_unknown_address_type(client):
+    """The CHECK constraint is not the default for a non-native enum, so prove it exists."""
+    with SessionLocal() as db:
+        ddl = db.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'addresses'")
+        ).scalar_one()
+
+    assert "CHECK" in ddl.upper()
+    assert "'Home'" in ddl and "'Work'" in ddl and "'Other'" in ddl
 
 
 def test_delete_contact(client, payload):

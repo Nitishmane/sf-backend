@@ -34,10 +34,25 @@ class Address(Base):
     )
 
     type: Mapped[AddressType] = mapped_column(
-        # native_enum=False stores the value as a VARCHAR with a CHECK
-        # constraint rather than a database-level ENUM type, which keeps the
-        # schema portable off SQLite without a migration.
-        SAEnum(AddressType, native_enum=False, length=10),
+        # native_enum=False stores a VARCHAR rather than a database-level ENUM
+        # type, which keeps the schema portable off SQLite without a migration.
+        # The other three arguments are each load-bearing, and none of them are
+        # the default:
+        #   create_constraint  — SQLAlchemy 2 emits no CHECK unless asked, so
+        #                        without this the column accepts any string.
+        #   values_callable    — by default it persists the *names* (HOME), not
+        #                        the values (Home) the API speaks. Storing the
+        #                        names would make raw SQL disagree with JSON.
+        #   name               — names the CHECK constraint, so a future
+        #                        migration can alter it by name.
+        SAEnum(
+            AddressType,
+            native_enum=False,
+            length=10,
+            create_constraint=True,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+            name="address_type",
+        ),
         nullable=False,
         default=AddressType.HOME,
     )

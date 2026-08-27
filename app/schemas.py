@@ -245,13 +245,19 @@ class ContactUpdate(BaseModel):
         default=None,
         description="New profile photo as a base64 data URL. Send `null` or an empty string to remove it.",
     )
-    addresses: list[AddressCreate] | None = Field(
-        default=None,
+    # Deliberately *not* `| None`. Absence is already the "leave them alone"
+    # signal, carried by `exclude_unset`, so a nullable field would give the
+    # same intent two spellings — and the second one, an explicit `null`, would
+    # be accepted and then silently ignored. Rejecting it at validation makes
+    # the request fail loudly instead of succeeding without doing anything.
+    # The default is never read; `exclude_unset` drops it when the key is absent.
+    addresses: list[AddressCreate] = Field(
+        default_factory=list,
         max_length=MAX_ADDRESSES,
         description=(
             "Replacement list of addresses. Omit the field to leave the stored addresses "
-            "untouched; send `[]` to delete them all. There is no partial edit of a single "
-            "address — send the whole list you want to end up with."
+            "untouched; send `[]` to delete them all. `null` is rejected. There is no "
+            "partial edit of a single address — send the whole list you want to end up with."
         ),
     )
 
